@@ -1,0 +1,76 @@
+# Downloads real grocery sales (Corporación Favorita, Ecuador; Kaggle "Store Sales - Time Series
+# Forecasting") and commits the perishable part as server/data/sales.csv. Run it by hand when the
+# data should be refreshed, then run the FreshLoop pipeline on it.
+name: Fetch real sales data
+
+on:
+  workflow_dispatch:
+    inputs:
+      stores:
+        description: How many stores to keep (largest perishable sales first)
+        default: "10"
+      days:
+        description: How many most recent days to keep
+        default: "400"
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    name: Download Favorita and keep perishables
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pandas==2.3.3
+      - name: Download from the public mirror of the Kaggle dataset
+        run: |
+          base=https://huggingface.co/datasets/t4tiana/store-sales-time-series-forecasting/resolve/main
+          mkdir -p raw
+          for f in train.csv stores.csv holidays_events.csv; do curl -fsSL "$base/$f" -o "raw/$f"; done
+          ls -la raw
+      - name: Keep perishable families from the largest stores
+        env:
+          STORES: ${{ inputs.stores }}
+          DAYS: ${{ inputs.days }}
+        shell: python
+        run: |
+          import os, hashlib
+          import pandas as pd
+          PERISHABLE = {"DAIRY": "Dairy", "BREAD/BAKERY": "Bakery", "PRODUCE": "Produce", "MEATS": "Meat",
+                        "POULTRY": "Poultry", "EGGS": "Eggs", "SEAFOOD": "Seafood", "DELI": "Deli"}
+          train = pd.read_csv("raw/train.csv", parse_dates=["date"])
+          stores = pd.read_csv("raw/stores.csv")
+          hol = pd.read_csv("raw/holidays_events.csv", parse_dates=["date"])
+          df = train[train.family.isin(PERISHABLE)]
+          df = df[df.date > df.date.max() - pd.Timedelta(days=int(os.environ["DAYS"]))]
+          top = df.groupby("store_nbr").sales.sum().nlargest(int(os.environ["STORES"])).index
+          df = df[df.store_nbr.isin(top)].merge(stores[["store_nbr", "city"]], on="store_nbr")
+          national = hol[(hol.locale == "National") & (hol.transferred == False) & (hol.type != "Work Day")].date.unique()
+          out = pd.DataFrame({
+              "date": df.date.dt.date,
+              "site": "store-" + df.store_nbr.astype(str).str.zfill(2) + "-" + df.city.str.lower().str.replace(" ", "-"),
+              "sku": df.family.str.replace("/", "-"),
+              "category": df.family.map(PERISHABLE),
+              "units_sold": df.sales.round(1),
+              "onpromotion": df.onpromotion.astype(int),
+              "holiday": df.date.isin(national).astype(int),
+          }).sort_values(["date", "site", "sku"])
+          out.to_csv("server/data/sales.csv", index=False)
+          digest = hashlib.sha256(open("raw/train.csv", "rb").read()).hexdigest()
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(f"### Real sales data\nSource: Corporación Favorita (Kaggle Store Sales), train.csv sha256 `{digest[:16]}`\n\n"
+                      f"{len(out)} rows · {out.site.nunique()} stores · {out.sku.nunique()} perishable families · {out.date.min()} to {out.date.max()}\n")
+          print(out.head(), len(out))
+      - name: Commit the data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898+github-actions[bot]@users.noreply.github.com"
+          git add server/data/sales.csv
+          git diff --cached --quiet && { echo "No change."; exit 0; }
+          git commit -m "Real sales data: Favorita perishables ($(wc -l < server/data/sales.csv) rows)"
+          git push

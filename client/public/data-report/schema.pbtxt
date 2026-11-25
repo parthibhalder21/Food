@@ -1,0 +1,217 @@
+feature {
+  name: "date"
+  type: BYTES
+  presence {
+    min_fraction: 1.0
+    min_count: 1
+  }
+  shape {
+    dim {
+      size: 1
+    }
+  }
+}
+feature {
+  name: "site"
+  type: BYTES
+  domain: "site"
+  presence {
+    min_fraction: 1.0
+    min_count: 1
+  }
+  drift_comparator {
+    infinity_norm {
+      threshold: 0.2
+    }
+  }
+  shape {
+    dim {
+      size: 1
+    }
+  }
+}
+feature {
+  name: "sku"
+  type: BYTES
+  domain: "sku"
+  presence {
+    min_fraction: 1.0
+    min_count: 1
+  }
+  drift_comparator {
+    infinity_norm {
+      threshold: 0.2
+    }
+  }
+  shape {
+    dim {
+      size: 1
+    }
+  }
+}
+feature {
+  name: "category"
+  type: BYTES
+  domain: "category"
+  presence {
+    min_fraction: 1.0
+    min_count: 1
+  }
+  shape {
+    dim {
+      size: 1
+    }
+  }
+}
+feature {
+  name: "units_sold"
+  type: INT
+  int_domain {
+    min: 0
+  }
+  presence {
+    min_fraction: 1.0
+    min_count: 1
+  }
+  drift_comparator {
+    jensen_shannon_divergence {
+      threshold: 0.1
+    }
+  }
+  shape {
+    dim {
+      size: 1
+    }
+  }
+}
+feature {
+  name: "price"
+  type: INT
+  presence {
+    min_fraction: 1.0
+    min_count: 1
+  }
+  shape {
+    dim {
+      size: 1
+    }
+  }
+}
+string_domain {
+  name: "date"
+  value: "2026-08-24"
+  value: "2026-08-25"
+  value: "2026-08-26"
+  value: "2026-08-27"
+  value: "2026-08-28"
+  value: "2026-08-29"
+  value: "2026-08-30"
+  value: "2026-08-31"
+  value: "2026-09-01"
+  value: "2026-09-02"
+  value: "2026-09-03"
+  value: "2026-09-04"
+  value: "2026-09-05"
+  value: "2026-09-06"
+  value: "2026-09-07"
+  value: "2026-09-08"
+  value: "2026-09-09"
+  value: "2026-09-10"
+  value: "2026-09-11"
+  value: "2026-09-12"
+  value: "2026-09-13"
+  value: "2026-09-14"
+  value: "2026-09-15"
+  value: "2026-09-16"
+  value: "2026-09-17"
+  value: "2026-09-18"
+  value: "2026-09-19"
+  value: "2026-09-20"
+  value: "2026-09-21"
+  value: "2026-09-22"
+  value: "2026-09-23"
+  value: "2026-09-24"
+  value: "2026-09-25"
+  value: "2026-09-26"
+  value: "2026-09-27"
+  value: "2026-09-28"
+  value: "2026-09-29"
+  value: "2026-09-30"
+  value: "2026-10-01"
+  value: "2026-10-02"
+  value: "2026-10-03"
+  value: "2026-10-04"
+  value: "2026-10-05"
+  value: "2026-10-06"
+  value: "2026-10-07"
+  value: "2026-10-08"
+  value: "2026-10-09"
+  value: "2026-10-10"
+  value: "2026-10-11"
+  value: "2026-10-12"
+  value: "2026-10-13"
+  value: "2026-10-14"
+  value: "2026-10-15"
+  value: "2026-10-16"
+  value: "2026-10-17"
+  value: "2026-10-18"
+  value: "2026-10-19"
+  value: "2026-10-20"
+  value: "2026-10-21"
+  value: "2026-10-22"
+  value: "2026-10-23"
+  value: "2026-10-24"
+  value: "2026-10-25"
+  value: "2026-10-26"
+  value: "2026-10-27"
+  value: "2026-10-28"
+  value: "2026-10-29"
+  value: "2026-10-30"
+  value: "2026-10-31"
+  value: "2026-11-01"
+  value: "2026-11-02"
+  value: "2026-11-03"
+  value: "2026-11-04"
+  value: "2026-11-05"
+  value: "2026-11-06"
+  value: "2026-11-07"
+  value: "2026-11-08"
+  value: "2026-11-09"
+  value: "2026-11-10"
+  value: "2026-11-11"
+  value: "2026-11-12"
+  value: "2026-11-13"
+  value: "2026-11-14"
+  value: "2026-11-15"
+}
+string_domain {
+  name: "site"
+  value: "indiranagar"
+  value: "jayanagar"
+  value: "koramangala"
+  value: "warehouse"
+}
+string_domain {
+  name: "sku"
+  value: "BANANA-DZ"
+  value: "BREAD-WW-400"
+  value: "CHICKEN-500"
+  value: "CORIANDER-BN"
+  value: "CURD-400"
+  value: "GRAPES-500"
+  value: "IDLI-BTR-1KG"
+  value: "MILK-TND-500"
+  value: "PANEER-200"
+  value: "PAV-6"
+  value: "SPINACH-BN"
+  value: "TOMATO-1KG"
+}
+string_domain {
+  name: "category"
+  value: "Bakery"
+  value: "Dairy"
+  value: "Fruits"
+  value: "Meat"
+  value: "Ready to cook"
+  value: "Vegetables"
+}

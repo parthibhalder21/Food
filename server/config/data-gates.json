@@ -1,0 +1,7 @@
+{
+  "description": "Thresholds for the data poisoning gate (ml/data_gate.py). Any figure beyond them blocks training.",
+  "zScoreThreshold": 3.0,
+  "minHistoryDays": 14,
+  "categoryDriftLInf": 0.2,
+  "unitsDriftJensenShannon": 0.1
+}

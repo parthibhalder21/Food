@@ -95,7 +95,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -125,7 +125,7 @@ jobs:
       - run: npm ci
       - name: Train the forecast and tune the safety buffer
         run: node server/scripts/model.js train --out artifacts --sales-shift "$TRAIN_SHIFT"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Install LightGBM

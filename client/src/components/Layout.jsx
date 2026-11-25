@@ -1,6 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import {
-  Boxes, ChartColumn, LayoutDashboard, LogOut, ScrollText, ShoppingBasket, SlidersHorizontal, Store, Tags,
+  Boxes, BrainCircuit, ChartColumn, LayoutDashboard, LogOut, ScrollText, ShoppingBasket, SlidersHorizontal, Store, Tags,
 } from "lucide-react";
 import { useAuth } from "../auth.jsx";
 import { Logo } from "./ui.jsx";
@@ -18,6 +18,7 @@ const NAV = {
     { section: "System" },
     { to: "/policy", label: "Risk policy", icon: SlidersHorizontal },
     { href: "data-report/index.html", label: "Data quality", icon: ChartColumn },
+    { href: "model-report/index.html", label: "Forecast model", icon: BrainCircuit },
   ],
   store: [
     { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -26,6 +27,7 @@ const NAV = {
     { to: "/listings", label: "Listings", icon: Tags },
     { to: "/policy", label: "Risk policy", icon: SlidersHorizontal },
     { href: "data-report/index.html", label: "Data quality", icon: ChartColumn },
+    { href: "model-report/index.html", label: "Forecast model", icon: BrainCircuit },
   ],
 };
 

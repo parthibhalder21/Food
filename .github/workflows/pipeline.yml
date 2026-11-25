@@ -2,7 +2,7 @@
 #
 #   01 Commit
 #   02 Build and test (coverage gate) ─┐
-#   02 Data poisoning gate (z-score,   ├─> 02 Train model ─┐
+#   02 Data poisoning gate (z-score,   ├─> 02 Train models ─┐
 #      TensorFlow Data Validation) ────┘                   ├─> 03 Supply-chain gate ─> 03 DAST gate
 #   03 SAST gate (CodeQL, ESLint security) ────────────────┘
 #   ─> 04 Waste and stockout gate ─> 05 Pilot stores ─> 05 All stores ─> 06 Monitor drift, share surplus
@@ -112,7 +112,7 @@ jobs:
           path: artifacts/data-report/
 
   train:
-    name: 02 Train model (on screened data)
+    name: 02 Train models (LightGBM vs current, on screened data)
     needs: [build, data]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -125,10 +125,26 @@ jobs:
       - run: npm ci
       - name: Train the forecast and tune the safety buffer
         run: node server/scripts/model.js train --out artifacts --sales-shift "$TRAIN_SHIFT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install LightGBM
+        run: pip install lightgbm==4.6.0 scikit-learn==1.7.2 pandas==2.3.3 matplotlib==3.11.2
+      - id: lgbm
+        name: Train LightGBM (P50 + P85) and compare it with the current model on an unseen week
+        run: python ml/train_model.py --out artifacts/model-report
       - uses: actions/upload-artifact@v4
         with:
           name: model
-          path: artifacts/forecast-model.json
+          path: |
+            artifacts/forecast-model.json
+            artifacts/model-report/lightgbm-p50.txt
+            artifacts/model-report/lightgbm-p85.txt
+            artifacts/model-report/metrics.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-report
+          path: artifacts/model-report/
 
   sast:
     name: 03 SAST gate (CodeQL + ESLint security)
@@ -211,8 +227,11 @@ jobs:
           name: model
           path: artifacts
       - uses: sigstore/cosign-installer@v3
-      - name: Sign the trained model
-        run: cosign sign-blob --yes --bundle artifacts/forecast-model.sigstore.json artifacts/forecast-model.json
+      - name: Sign the trained models
+        run: |
+          for f in artifacts/forecast-model.json artifacts/model-report/lightgbm-p50.txt artifacts/model-report/lightgbm-p85.txt; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+          done
       - id: vars
         shell: bash
         run: |
@@ -353,8 +372,10 @@ jobs:
           id="^https://github.com/${{ github.repository }}/"
           cosign verify "${{ needs.gate.outputs.image }}@${{ needs.gate.outputs.digest }}" \
             --certificate-identity-regexp "$id" --certificate-oidc-issuer https://token.actions.githubusercontent.com
-          cosign verify-blob artifacts/forecast-model.json --bundle artifacts/forecast-model.sigstore.json \
-            --certificate-identity-regexp "$id" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          for f in artifacts/forecast-model.json artifacts/model-report/lightgbm-p50.txt artifacts/model-report/lightgbm-p85.txt; do
+            cosign verify-blob "$f" --bundle "$f.sigstore.json" \
+              --certificate-identity-regexp "$id" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          done
       - name: Deploy to the pilot stores
         env:
           HOOK: ${{ secrets.PILOT_DEPLOY_HOOK }}
@@ -444,6 +465,10 @@ jobs:
         with:
           name: data-report
           path: client/dist-demo/data-report
+      - uses: actions/download-artifact@v4
+        with:
+          name: model-report
+          path: client/dist-demo/model-report
       - uses: actions/upload-pages-artifact@v3
         with:
           path: client/dist-demo

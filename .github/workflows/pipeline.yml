@@ -1,0 +1,458 @@
+# FreshLoop secure CI/CD pipeline. Every gate must pass before anything reaches a store.
+#
+#   01 Commit
+#   02 Build and test (coverage gate) ─┐
+#   02 Data poisoning gate (z-score,   ├─> 02 Train model ─┐
+#      TensorFlow Data Validation) ────┘                   ├─> 03 Supply-chain gate ─> 03 DAST gate
+#   03 SAST gate (CodeQL, ESLint security) ────────────────┘
+#   ─> 04 Waste and stockout gate ─> 05 Pilot stores ─> 05 All stores ─> 06 Monitor drift, share surplus
+#                                                                     └─> 06 Publish website and data report
+#   06 starts a retraining run of this pipeline when it detects drift.
+name: FreshLoop pipeline
+run-name: ${{ inputs.reason == 'drift' && 'Retrain after drift' || inputs.inject_poison && 'Demo - poisoned data' || github.event_name == 'workflow_dispatch' && 'Manual run' || github.event.head_commit.message }}
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this run started
+        type: choice
+        options: [manual, drift]
+        default: manual
+      sales_shift:
+        description: "Demo: multiply sales after release by this (try 1.4 to show drift)"
+        default: "1"
+      inject_poison:
+        description: "Demo: add a poisoned sales figure (the data gate must block it)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: freshloop-pipeline
+  cancel-in-progress: false
+
+env:
+  TRAIN_SHIFT: ${{ inputs.reason == 'drift' && inputs.sales_shift || '1' }}
+  MONITOR_SHIFT: ${{ inputs.sales_shift || '1' }}
+  NODE_OPTIONS: --disable-warning=ExperimentalWarning
+
+jobs:
+  commit:
+    name: 01 Commit code and data
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Record what this change touches
+        shell: bash
+        run: |
+          changed=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-files)
+          kind() { echo "$changed" | grep -qE "$1" && echo "yes" || echo "no"; }
+          {
+            echo "### 01 Commit"
+            echo "Commit \`${GITHUB_SHA::7}\` by ${GITHUB_ACTOR} (${{ github.event_name }})"
+            echo
+            echo "| Part | Changed | Fingerprint (sha256) |"
+            echo "| --- | --- | --- |"
+            echo "| App code | $(kind '^(server/src|client/src)/') | - |"
+            echo "| Risk policy | $(kind '^server/config/risk-policy.json$') | \`$(sha256sum server/config/risk-policy.json | cut -c1-16)\` |"
+            echo "| Sales data | $(kind '^server/data/.*\.csv$') | \`$(cat server/data/*.csv | sha256sum | cut -c1-16)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: 02 Build and test
+    needs: commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Unit and API tests with coverage gate (lines 85%, branches 75%, functions 80%)
+        shell: bash
+        run: |
+          npm run test:coverage 2>&1 | tee coverage.txt
+          { echo "### 02 Tests and coverage"; echo '```'; grep -E "^# (tests|pass|fail)|all files" coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Build the web app
+        run: npm run build
+
+  data:
+    name: 02 Data poisoning gate (z-score + TensorFlow Data Validation)
+    needs: commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: ml/requirements.txt
+      - name: Install TensorFlow Data Validation
+        run: pip install -r ml/requirements.txt
+      - name: Check the latest sales upload against 84 days of history
+        run: python ml/data_gate.py --out artifacts/data-report ${{ inputs.inject_poison && '--inject-poison' || '' }}
+      - name: Upload the data report (charts, TFDV statistics, schema, z-scores)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-report
+          path: artifacts/data-report/
+
+  train:
+    name: 02 Train model (on screened data)
+    needs: [build, data]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Train the forecast and tune the safety buffer
+        run: node server/scripts/model.js train --out artifacts --sales-shift "$TRAIN_SHIFT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model
+          path: artifacts/forecast-model.json
+
+  sast:
+    name: 03 SAST gate (CodeQL + ESLint security)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: ESLint security rules (fail on any error)
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run sast 2>&1 | tee sast.txt
+          { echo "### 03 SAST: ESLint security"; echo '```'; tail -3 sast.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          config-file: ./.github/codeql/codeql-config.yml
+      - name: CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          output: codeql-results
+      - name: Fail on high or critical CodeQL findings
+        shell: bash
+        run: |
+          high=$(jq -s '[.[] | .runs[] | ([.tool.driver.rules[]?, .tool.extensions[]?.rules[]?] | map({key: .id, value: ((.properties["security-severity"] // "0") | tonumber)}) | from_entries) as $sev | .results[]? | select(($sev[.ruleId] // 0) >= 7)] | length' codeql-results/*.sarif)
+          echo "CodeQL findings with severity 7.0 or higher: $high" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$high" -eq 0 ]
+
+  supply:
+    name: 03 Supply-chain gate (dependencies, secrets, SBOM, image scan, signing)
+    needs: [train, sast]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless signing with Sigstore
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Dependency audit (fail on high or critical)
+        run: npm audit --omit=dev --audit-level=high
+      - name: Licence check (no GPL-family licences in production code)
+        run: npx --yes license-checker-rseidelsohn@4 --production --excludePrivatePackages --summary --failOn "GPL-2.0;GPL-3.0;AGPL-3.0;LGPL-2.1;LGPL-3.0;SSPL-1.0"
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Dockerfile misconfiguration scan (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+      - name: Software bill of materials (CycloneDX)
+        run: mkdir -p artifacts && npx --yes @cyclonedx/cyclonedx-npm --omit dev --output-file artifacts/sbom.cdx.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: model
+          path: artifacts
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the trained model
+        run: cosign sign-blob --yes --bundle artifacts/forecast-model.sigstore.json artifacts/forecast-model.json
+      - id: vars
+        shell: bash
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "policy_sha=$(sha256sum server/config/risk-policy.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+          labels: |
+            org.freshloop.risk-policy.sha256=${{ steps.vars.outputs.policy_sha }}
+      - id: image
+        name: Build the release image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+      - name: Image vulnerability scan (Trivy, fail on high or critical)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.vars.outputs.image }}@${{ steps.image.outputs.digest }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Sign the image
+        run: cosign sign --yes "${{ steps.vars.outputs.image }}@${{ steps.image.outputs.digest }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-release
+          path: artifacts/
+
+  dast:
+    name: 03 DAST gate (OWASP ZAP + API attack tests)
+    needs: supply
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      image: ${{ needs.supply.outputs.image }}
+      digest: ${{ needs.supply.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start the signed release image
+        shell: bash
+        run: |
+          docker run -d --name app -p 4000:4000 -e JWT_SECRET="$(openssl rand -hex 32)" "${{ needs.supply.outputs.image }}@${{ needs.supply.outputs.digest }}"
+          for i in $(seq 1 30); do curl -fsS http://localhost:4000/api/health && exit 0; sleep 2; done
+          docker logs app; exit 1
+      - name: OWASP ZAP baseline scan (fails on the rules marked FAIL in .zap/rules.tsv)
+        shell: bash
+        run: |
+          mkdir -p zap && cp .zap/rules.tsv zap/ && chmod -R 777 zap
+          docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://localhost:4000 -c rules.tsv -I -r zap-report.html -w zap-report.md
+      - name: Add the ZAP result to the summary
+        if: always()
+        shell: bash
+        run: |
+          { echo "### 03 DAST: OWASP ZAP baseline"; [ -f zap/zap-report.md ] && sed -n '1,60p' zap/zap-report.md || echo "No report."; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: API attack tests (auth bypass, forged tokens, IDOR, injection, brute force)
+        run: node server/scripts/dast.js http://localhost:4000
+      - name: Upload the ZAP report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-report
+          path: zap/
+      - name: Stop the app
+        if: always()
+        run: docker rm -f app
+
+  gate:
+    name: 04 Waste and stockout gate
+    needs: dast
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      image: ${{ needs.dast.outputs.image }}
+      digest: ${{ needs.dast.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Replay the policy on 600 batches; fail if waste or stockouts rise
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run waste-gate 2>&1 | tee waste-gate.txt
+      - name: Add the result to the summary
+        if: always()
+        shell: bash
+        run: |
+          { echo "### 04 Waste and stockout gate"; echo '```'; cat waste-gate.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  pilot:
+    name: 05 Pilot stores
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pilot
+    outputs:
+      image: ${{ needs.gate.outputs.image }}
+      digest: ${{ needs.gate.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-release
+          path: artifacts
+      - uses: sigstore/cosign-installer@v3
+      - name: Verify the image and model signatures
+        run: |
+          id="^https://github.com/${{ github.repository }}/"
+          cosign verify "${{ needs.gate.outputs.image }}@${{ needs.gate.outputs.digest }}" \
+            --certificate-identity-regexp "$id" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          cosign verify-blob artifacts/forecast-model.json --bundle artifacts/forecast-model.sigstore.json \
+            --certificate-identity-regexp "$id" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Deploy to the pilot stores
+        env:
+          HOOK: ${{ secrets.PILOT_DEPLOY_HOOK }}
+          IMAGE: ${{ needs.gate.outputs.image }}@${{ needs.gate.outputs.digest }}
+        run: |
+          if [ -z "$HOOK" ]; then echo "PILOT_DEPLOY_HOOK is not set, so this is a dry run. Would deploy $IMAGE"; exit 0; fi
+          curl -fsS -X POST "$HOOK"
+      - name: Smoke test
+        env:
+          URL: ${{ vars.PILOT_URL }}
+        run: |
+          if [ -z "$URL" ]; then echo "PILOT_URL is not set: skipping smoke test."; exit 0; fi
+          for i in $(seq 1 20); do curl -fsS "$URL/api/health" && exit 0; sleep 15; done
+          echo "Pilot did not become healthy. Roll back with the Rollback workflow."; exit 1
+
+  fleet:
+    name: 05 All stores (after approval)
+    needs: pilot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Settings -> Environments -> production -> Required reviewers: someone approves after checking the pilot.
+    environment: production
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - name: Verify the image signature
+        run: |
+          cosign verify "${{ needs.pilot.outputs.image }}@${{ needs.pilot.outputs.digest }}" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Deploy to all stores
+        env:
+          HOOK: ${{ secrets.PRODUCTION_DEPLOY_HOOK }}
+          IMAGE: ${{ needs.pilot.outputs.image }}@${{ needs.pilot.outputs.digest }}
+        run: |
+          if [ -z "$HOOK" ]; then echo "PRODUCTION_DEPLOY_HOOK is not set, so this is a dry run. Would deploy $IMAGE"; exit 0; fi
+          curl -fsS -X POST "$HOOK"
+
+  monitor:
+    name: 06 Monitor drift, share surplus
+    needs: fleet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # to start the retraining run
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: model
+          path: artifacts
+      - id: check
+        name: Check drift and list surplus to share
+        run: node server/scripts/model.js monitor --model artifacts/forecast-model.json --sales-shift "$MONITOR_SHIFT"
+      - name: Drift detected, so retrain and run every gate again
+        if: steps.check.outputs.drift == 'true' && inputs.reason != 'drift'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run pipeline.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}" \
+            -f reason=drift -f sales_shift="$MONITOR_SHIFT"
+          echo "Started a retraining run. See the Actions tab." >> "$GITHUB_STEP_SUMMARY"
+      - name: Still drifting after a retrain
+        if: steps.check.outputs.drift == 'true' && inputs.reason == 'drift'
+        run: echo "::warning::Forecast error is still above the limit after retraining. A person should review the sales data."
+
+  publish:
+    name: 06 Publish website and data report
+    needs: fleet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build the app (runs fully in the browser)
+        run: npm run build:demo
+      - uses: actions/download-artifact@v4
+        with:
+          name: data-report
+          path: client/dist-demo/data-report
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: client/dist-demo
+      - id: deployment
+        uses: actions/deploy-pages@v4

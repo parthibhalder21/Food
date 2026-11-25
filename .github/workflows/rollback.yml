@@ -1,0 +1,39 @@
+# Roll an environment back to an earlier signed image, chosen by its commit SHA.
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which environment to roll back
+        type: choice
+        options: [pilot, production]
+        required: true
+      sha:
+        description: Full commit SHA of the release to go back to
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - id: vars
+        shell: bash
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:sha-${{ inputs.sha }}" >> "$GITHUB_OUTPUT"
+      - name: Verify the old image is one we signed
+        run: |
+          cosign verify "${{ steps.vars.outputs.image }}" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Redeploy it
+        env:
+          HOOK: ${{ inputs.environment == 'production' && secrets.PRODUCTION_DEPLOY_HOOK || secrets.PILOT_DEPLOY_HOOK }}
+          IMAGE: ${{ steps.vars.outputs.image }}
+        run: |
+          if [ -z "$HOOK" ]; then echo "No deploy hook set, so this is a dry run. Would redeploy $IMAGE"; exit 0; fi
+          curl -fsS -X POST "$HOOK?imgURL=$(printf %s "$IMAGE" | jq -sRr @uri)"

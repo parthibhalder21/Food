@@ -1,0 +1,73 @@
+# DevSecOps checks on pull requests and every Monday, to catch newly published vulnerabilities.
+# On main the same checks run inside the FreshLoop pipeline (stage 03).
+name: Weekly security scan
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 3 * * 1" # every Monday, to catch newly published vulnerabilities
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: Static analysis (CodeQL, SAST)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@v3
+
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Fail on high or critical vulnerabilities in production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  secrets:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  sbom:
+    name: Software bill of materials (CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Generate SBOM
+        run: npx --yes @cyclonedx/cyclonedx-npm --omit dev --output-file sbom.cdx.json
+      - name: Fingerprint the risk policy (the "model" the system runs on)
+        run: sha256sum server/config/risk-policy.json | tee policy.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            sbom.cdx.json
+            policy.sha256

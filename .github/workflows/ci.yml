@@ -1,0 +1,69 @@
+# Checks for pull requests. Pushes to main go through the full FreshLoop pipeline instead.
+name: Pull request checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, test and build (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - name: Tests with coverage gate
+        run: npm run test:coverage
+      - name: SAST (ESLint security rules)
+        run: npm run sast
+      - run: npm run build
+
+  dependency-review:
+    # Blocks a pull request that adds a dependency with a known high or critical vulnerability.
+    name: Dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  waste-gate:
+    # Novelty 1: a change ships only if simulated food waste and stockouts do not get worse.
+    name: Waste gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Replay the risk policy on the fixed scenario
+        shell: bash
+        run: npm run waste-gate 2>&1 | tee waste-gate.txt
+      - name: Add the result to the job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Waste gate"
+            echo '```'
+            cat waste-gate.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

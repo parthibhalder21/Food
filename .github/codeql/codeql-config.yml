@@ -1,0 +1,12 @@
+# CodeQL scans the application code. Test code and the attack scripts used by the DAST gate
+# deliberately contain forged tokens and injection payloads, so they are left out.
+name: FreshLoop CodeQL config
+queries:
+  - uses: security-extended
+paths-ignore:
+  - server/test
+  - server/scripts/dast.js
+  - client/dist
+  - client/dist-demo
+  - client/public
+  - index.html

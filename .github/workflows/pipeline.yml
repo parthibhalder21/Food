@@ -234,7 +234,7 @@ jobs:
             org.freshloop.risk-policy.sha256=${{ steps.vars.outputs.policy_sha }}
       - id: image
         name: Build the release image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true

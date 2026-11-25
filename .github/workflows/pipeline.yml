@@ -193,7 +193,7 @@ jobs:
       - name: Licence check (no GPL-family licences in production code)
         run: npx --yes license-checker-rseidelsohn@4 --production --excludePrivatePackages --summary --failOn "GPL-2.0;GPL-3.0;AGPL-3.0;LGPL-2.1;LGPL-3.0;SSPL-1.0"
       - name: Secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Dockerfile misconfiguration scan (Trivy)

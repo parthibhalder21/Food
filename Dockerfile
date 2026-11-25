@@ -20,7 +20,11 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server ./server
 COPY --from=build /app/client/dist ./client/dist
-RUN mkdir -p /data && chown node:node /data
+# The app runs with plain `node`. npm, npx, corepack and yarn are removed from the runtime image:
+# they are never used here, and their bundled packages are the image's only known vulnerabilities.
+RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+      /opt/yarn* /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+    && mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]
 EXPOSE 4000

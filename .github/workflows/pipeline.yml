@@ -6,7 +6,7 @@
 #      TensorFlow Data Validation) ────┘                   ├─> 03 Supply-chain gate ─> 03 DAST gate
 #   03 SAST gate (CodeQL, ESLint security) ────────────────┘
 #   ─> 04 Waste and stockout gate ─> 05 Pilot stores ─> 05 All stores ─> 06 Monitor drift, share surplus
-#                                                                     └─> 06 Publish website and data report
+#                                                                     └─> 06 Build website ─> 06 Publish website
 #   06 starts a retraining run of this pipeline when it detects drift.
 name: FreshLoop pipeline
 run-name: ${{ inputs.reason == 'drift' && 'Retrain after drift' || inputs.inject_poison && 'Demo - poisoned data' || github.event_name == 'workflow_dispatch' && 'Manual run' || github.event.head_commit.message }}
@@ -427,17 +427,10 @@ jobs:
         run: echo "::warning::Forecast error is still above the limit after retraining. A person should review the sales data."
 
   publish:
-    name: 06 Publish website and data report
+    name: 06 Build website and data report
     needs: fleet
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -451,9 +444,21 @@ jobs:
         with:
           name: data-report
           path: client/dist-demo/data-report
-      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: client/dist-demo
+
+  website:
+    name: 06 Publish website
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4

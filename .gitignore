@@ -9,3 +9,4 @@ server/data/*.db-*
 sbom*.json
 dist-demo/
 artifacts/
+__pycache__/
